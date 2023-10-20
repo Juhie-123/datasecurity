@@ -1,0 +1,259 @@
+from flask import Flask, render_template, request, redirect, url_for, flash
+from flask_login import LoginManager, UserMixin, login_user, login_required, logout_user, current_user
+from werkzeug.security import generate_password_hash, check_password_hash
+import sqlite3
+from flask import jsonify
+import requests
+import random
+import smtplib
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
+
+app = Flask(__name__)
+app.secret_key = b'_5#y2L"F4Q8z\n\xec]/'
+
+DATABASE = "database.db"
+
+login_manager = LoginManager()
+login_manager.login_view = 'login'
+login_manager.init_app(app)
+
+otp_store = {}
+
+
+
+class User(UserMixin):
+    def __init__(self, user_id, email, password, first_name):
+        self.id = user_id
+        self.email = email
+        self.password = password
+        self.first_name = first_name
+
+@login_manager.user_loader
+def load_user(user_id):
+    conn = sqlite3.connect(DATABASE)
+    cursor = conn.cursor()
+    cursor.execute("SELECT * FROM user WHERE id=?", (user_id,))
+    user_data = cursor.fetchone()
+    conn.close()
+    if user_data:
+        return User(*user_data)
+    return None
+
+# Sample data for dogs and cats
+dogs = [
+    {"id": 1, "name": "Charlie", "image": "/static/dog1.jpg", "description": "Meet Charlie, the charming Corgi with a heart as big as those adorable ears. Charlie is a playful and intelligent companion, known for their loyalty and affectionate nature. This little bundle of joy is ready to bring smiles and laughter into your home."},
+    {"id": 2, "name": "Phoebe", "image": "/static/dog2.jpg", "description": "Introducing Phoebe, the delightful Bolognese who's as fluffy as a cloud. This small, white ball of fur is not just a lap dog, Phoebe is full of personality and loves to be the center of attention. With a sweet disposition, she'll surely add warmth to your home."},
+    {"id": 3, "name": "Daisy", "image": "/static/dog3.png", "description": "Daisy, the majestic German Shepherd, is a loyal guardian and a loving friend. With her striking appearance and intelligence, Daisy is ready to be a protective member of your family. Whether playing in the yard or cuddling on the couch, she's a devoted companion."},
+    {"id": 4, "name": "Bhairav", "image": "/static/dog4.jpg", "description": "Meet Bhairav, the regal Rajapalayam with a proud bearing and a heart of gold. Known for their courage and loyalty, Bhairav is not just a pet but a symbol of strength and fidelity. With a sleek white coat, he's a magnificent presence waiting to grace your home."},
+    {"id": 5, "name": "Veera", "image": "/static/dog6.jpg", "description": "Veera, the spirited Kombai, is a true Indian gem. With a distinctive appearance and a lively spirit, Veera is a wonderful blend of strength and agility. This companion is ready for adventures and will bring a touch of Indian heritage to your life."},
+    {"id": 6, "name": "Harry", "image": "/static/dog5.jpg", "description": "Meet Harry, the handsome Husky with piercing blue eyes, is an adventurous and sociable canine companion. Known for their striking coat and friendly demeanor, Harry loves outdoor activities and is always up for a run or a playful game of fetch. Get ready for an energetic and loving addition to your family."}
+]
+
+cats = [
+    {"id": 1, "name": "Whiskers", "image": "/static/cat1.jpg", "description": "Meet Whiskers, the elegant grey cat, is a picture of sophistication and grace. With a plush, silvery coat and whiskers that dance like wisps of smoke, Whiskers is as charming as they are mysterious. This feline friend is sure to bring a touch of quiet elegance to your home."},
+    {"id": 2, "name": "Mittens", "image": "/static/cat2.jpg", "description": "Introducing Mittens, the playful tabby cat, is a bundle of energy and charm. With distinctive stripes and adorable mittens on each paw, Mittens is ready for interactive play and cuddles. This tabby's affectionate nature will warm your heart."},
+    {"id": 3, "name": "Snophy", "image": "/static/cat3.jpg", "description": "Snophy, the striped brown beauty, is a cat with a unique pattern that tells a story. With a coat resembling the rich hues of autumn, Snophy is both cozy and captivating. This feline friend is ready to share quiet moments and playful antics."},
+    {"id": 4, "name": "Kayal", "image": "/static/cat4.jpg", "description": "Kayal, the enigmatic Kao Mane, is a cat with a distinctive appearance and a captivating gaze. With a coat reminiscent of a moonlit night, Kayal brings a touch of mystery and a whole lot of love to your home."},
+    {"id": 5, "name": "Cutey", "image": "/static/cat5.jpg", "description": "Meet Cutey, the orange-striped charmer, is a burst of sunshine in feline form. With a bright and vivacious personality, Cutey's playful antics and affectionate purrs are bound to bring joy to your home. Get ready for a daily dose of cuteness."},
+    {"id": 6, "name": "Sweety", "image": "/static/cat6.jpg", "description": "Sweety, the sleek black cat, is a creature of elegance and mystery. With eyes that gleam like polished onyx, Sweety is a gentle companion with a heart full of love. Despite superstitions, this black cat is ready to bring nothing but good luck and warmth into your life."},
+]
+
+@app.route('/')
+@login_required
+def home():
+    return render_template('home.html', user=current_user, dogs=dogs, cats=cats)
+
+# Add a route for pet details
+@app.route('/pet/<pet_type>/<int:pet_id>')
+@login_required
+def pet_detail(pet_type, pet_id):
+    # Retrieve pet details based on pet_type and pet_id
+    if pet_type == 'dog':
+        pet = next((dog for dog in dogs if dog["id"] == pet_id), None)
+    elif pet_type == 'cat':
+        pet = next((cat for cat in cats if cat["id"] == pet_id), None)
+    else:
+        pet = None
+
+    if pet:
+        return render_template('pet_detail.html', user=current_user, pet=pet, pet_type=pet_type)
+    else:
+        flash('Pet not found', category='error')
+        return redirect(url_for('home'))
+
+def verify_recaptcha(recaptcha_response):
+    secret_key = "6LddK48oAAAAAOTdkykCV11V2uz_LP1if2jelHCK"
+    data = {
+        'secret': secret_key,
+        'response': recaptcha_response
+    }
+    response = requests.post('https://www.google.com/recaptcha/api/siteverify', data=data)
+    result = response.json()
+    return result.get('success', False)
+
+# Update your login route
+@app.route('/login', methods=['GET', 'POST'])
+def login():
+    if request.method == 'POST':
+        email = request.form.get('email')
+        password = request.form.get('password')
+        recaptcha_response = request.form.get('g-recaptcha-response')
+
+        # Verify the reCAPTCHA response
+        if not verify_recaptcha(recaptcha_response):
+            flash('reCAPTCHA verification failed. Please try again.', category='error')
+            return redirect(url_for('login'))
+
+        conn = sqlite3.connect(DATABASE)
+        cursor = conn.cursor()
+        cursor.execute("SELECT * FROM user WHERE email=?", (email,))
+        user_data = cursor.fetchone()
+
+        if user_data and check_password_hash(user_data[2], password):
+            user = User(*user_data)
+            flash('Logged in successfully!', category='success')
+            login_user(user, remember=True)
+            conn.close()
+            return redirect(url_for('home'))
+        else:
+            flash('Incorrect email or password, try again.', category='error')
+            conn.close()
+
+    return render_template("login.html", user=current_user)
+
+
+@app.route('/logout')
+@login_required
+def logout():
+    logout_user()
+    return redirect(url_for('login'))
+
+@app.route('/signup', methods=['GET', 'POST'])
+def signup():
+    if request.method == 'POST':
+        email = request.form.get('email')
+        first_name = request.form.get('firstName')
+        password1 = request.form.get('password1')
+        password2 = request.form.get('password2')
+
+        conn = sqlite3.connect(DATABASE)
+        cursor = conn.cursor()
+
+        # Check if the email already exists
+        cursor.execute("SELECT * FROM user WHERE email=?", (email,))
+        existing_user = cursor.fetchone()
+
+        if existing_user:
+            flash('Email already exists', category='error')
+        elif len(email) < 4 or len(first_name) < 2 or password1 != password2 or len(password1) < 7:
+            flash('Invalid registration data. Please check your input.', category='error')
+        else:
+            # Insert the new user into the 'user' table
+            hashed_password = generate_password_hash(password1, method='sha256')
+            cursor.execute("INSERT INTO user (email, password, first_name) VALUES (?, ?, ?)", (email, hashed_password, first_name))
+            conn.commit()
+            flash('Account created!', category='success')
+            conn.close()
+
+    return render_template("signup.html",user=current_user)
+
+
+@app.route('/adopt_confirm/<pet_type>/<int:pet_id>', methods=['GET', 'POST'])
+@login_required
+def adopt_confirm(pet_type, pet_id):
+    original_otp = None
+    confirmation_successful = False
+
+    if request.method == 'POST':
+        # Verify OTP
+        user_otp = request.form.get('otp')
+        stored_otp = otp_store.get(current_user.email)
+
+        if stored_otp and user_otp == stored_otp:
+            # OTP is correct, proceed with adoption
+            confirmation_successful = True
+
+    # Generate original OTP if not already generated or if there was an error
+    if not confirmation_successful:
+        original_otp = str(random.randint(1000, 9999))
+        otp_store[current_user.email] = original_otp
+
+    # If confirmation is successful, redirect to adoption_confirmation page
+    if confirmation_successful:
+        return render_template('adoption_confirmation.html', user=current_user, pet_type=pet_type, pet_id=pet_id, original_otp=original_otp)
+
+    # Make sure to pass the user variable, original_otp, and confirmation_successful to the template
+    return render_template(
+        'adopt_confirm.html',
+        user=current_user,
+        pet_type=pet_type,
+        pet_id=pet_id,
+        original_otp=original_otp,
+        confirmation_successful=confirmation_successful
+    )
+
+
+
+@app.route('/resend_otp/<pet_type>/<int:pet_id>', methods=['GET', 'POST'])
+@login_required
+def resend_otp(pet_type, pet_id):
+    if request.method == 'POST':
+        # Verify OTP
+        user_otp = request.form.get('otp')
+        stored_otp = otp_store.get(current_user.email)
+
+        if stored_otp and user_otp == stored_otp:
+            # OTP is correct, proceed to adoption confirmation
+             return render_template('adoption_confirmation.html', user=current_user, pet_type=pet_type, pet_id=pet_id, stored_otp_otp=stored_otp)
+
+        flash('Incorrect OTP. Please try again.', category='error')
+
+    # Generate and store a new OTP
+    new_otp = str(random.randint(1000, 9999))
+    otp_store[current_user.email] = new_otp
+
+    flash(f'New OTP sent: {new_otp}', category='success')
+
+    # Render the adoption confirmation page with the new OTP
+    return render_template('adopt_confirm.html', user=current_user, pet_type=pet_type, pet_id=pet_id, original_otp=new_otp)
+if __name__ == '__main__':
+    app.run(debug=True)
+
+db.py
+import sqlite3
+
+def initialize_database():
+    # Connect to SQLite database (creates a new database if it doesn't exist)
+    conn = sqlite3.connect('database.db')
+
+    # Create a cursor object to execute SQL queries
+    cursor = conn.cursor()
+
+    # Define the SQL queries to create tables
+    create_user_table = '''
+    CREATE TABLE IF NOT EXISTS user (
+        id INTEGER PRIMARY KEY,
+        email TEXT UNIQUE,
+        password TEXT,
+        first_name TEXT
+    );
+    '''
+
+    create_note_table = '''
+    CREATE TABLE IF NOT EXISTS note (
+        id INTEGER PRIMARY KEY,
+        data TEXT,
+        date DATETIME DEFAULT CURRENT_TIMESTAMP,
+        user_id INTEGER,
+        FOREIGN KEY (user_id) REFERENCES user (id)
+    );
+    '''
+
+    # Execute the SQL queries
+    cursor.execute(create_user_table)
+    cursor.execute(create_note_table)
+
+    # Commit the changes and close the connection
+    conn.commit()
+    conn.close()
